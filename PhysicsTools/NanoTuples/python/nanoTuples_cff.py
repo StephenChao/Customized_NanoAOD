@@ -2,7 +2,8 @@ import FWCore.ParameterSet.Config as cms
 from PhysicsTools.NanoAOD.common_cff import Var
 from PhysicsTools.NanoTuples.ak15_cff import setupAK15
 from PhysicsTools.NanoTuples.ak8_cff import addParticleNetAK8, getCustomTaggerDiscriminators, addCustomTagger
-from PhysicsTools.NanoTuples.pfcands_cff import addPFCands
+from PhysicsTools.NanoTuples.addPFCands_cff import addPFCands
+from PhysicsTools.NanoTuples.addBTV import add_BTV
 
 
 def nanoTuples_customizeVectexTable(process):
@@ -85,7 +86,8 @@ def nanoTuples_customizeCommon(process, runOnMC, addAK15=True, addAK8=False, add
         pfcand_params['isPuppiJets'].append(True)
         pfcand_params['jetTables'].append('fatJetTable')
     if addPFcands:
-        addPFCands(process, outTableName='PFCands', **pfcand_params)
+        addPFCands(process, runOnMC=runOnMC, addAK4=True, addAK8=True)
+        add_BTV(process, runOnMC=runOnMC)  
 
     if AddDeepAK8RawScore:
         nanoTuples_addDeepAK8RawScore(process, addDeepAK8Probs=True)

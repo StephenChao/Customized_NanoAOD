@@ -1,5 +1,6 @@
 #include "FWCore/Framework/interface/Frameworkfwd.h"
 #include "FWCore/Framework/interface/stream/EDProducer.h"
+#include "FWCore/MessageLogger/interface/MessageLogger.h"
 
 #include "FWCore/Framework/interface/Event.h"
 #include "FWCore/Framework/interface/MakerMacros.h"
@@ -8,20 +9,29 @@
 #include "FWCore/Utilities/interface/StreamID.h"
 
 #include "DataFormats/VertexReco/interface/VertexFwd.h"
+#include "RecoVertex/VertexTools/interface/VertexDistance3D.h"
+#include "RecoVertex/VertexTools/interface/VertexDistanceXY.h"
+#include "RecoVertex/VertexPrimitives/interface/ConvertToFromReco.h"
+#include "RecoVertex/VertexPrimitives/interface/VertexState.h"
 
 #include "DataFormats/PatCandidates/interface/Jet.h"
 #include "DataFormats/PatCandidates/interface/PackedCandidate.h"
 
+#include "DataFormats/Candidate/interface/CandidateFwd.h"
+
 #include "RecoBTag/FeatureTools/interface/TrackInfoBuilder.h"
 #include "TrackingTools/Records/interface/TransientTrackRecord.h"
 
+#include "DataFormats/BTauReco/interface/TrackIPTagInfo.h"
+#include "DataFormats/BTauReco/interface/SecondaryVertexTagInfo.h"
+#include "RecoBTag/FeatureTools/interface/deep_helpers.h"
+#include "DataFormats/Candidate/interface/VertexCompositePtrCandidate.h"
+using namespace btagbtvdeep;
+
 #include "CommonTools/Utils/interface/StringCutObjectSelector.h"
 #include "DataFormats/NanoAOD/interface/FlatTable.h"
-#include "DataFormats/Common/interface/ValueMap.h"
 
-#include <unordered_map>
-#include <unordered_set>
-
+template<typename T>
 class JetConstituentTableProducer : public edm::stream::EDProducer<> {
 public:
   explicit JetConstituentTableProducer(const edm::ParameterSet &);
@@ -30,253 +40,256 @@ public:
   static void fillDescriptions(edm::ConfigurationDescriptions &descriptions);
 
 private:
-  typedef edm::Ptr<pat::PackedCandidate> CandidatePtr;
-  typedef CandidatePtr::key_type Key;
-  typedef edm::View<pat::PackedCandidate> CandidateView;
-  typedef reco::VertexCollection VertexCollection;
-
   void produce(edm::Event &, const edm::EventSetup &) override;
 
-  template <typename T>
-  T getval(const std::unordered_map<Key, T> &m, Key key, T fallback = 0) {
-    auto it = m.find(key);
-    return it == m.end() ? fallback : it->second;
-  }
+  typedef reco::VertexCollection VertexCollection;
+  //=====
+  typedef reco::VertexCompositePtrCandidateCollection SVCollection;
 
-  std::vector<CandidatePtr> getDaughters(const pat::Jet &jet, bool isPuppi);
-
+  //const std::string name_;
   const std::string name_;
-  const bool check_indices_;
+  const std::string nameSV_;
+  const std::string idx_name_;
+  const std::string idx_nameSV_;
+  const bool readBtag_;
+  const double jet_radius_;
 
-  unsigned ncols_ = 0;
-  std::vector<std::string> jet_names_;
-  std::vector<bool> jet_ispuppi_;
-  std::vector<StringCutObjectSelector<pat::Jet>> jet_cuts_;
-  std::vector<edm::EDGetTokenT<edm::View<pat::Jet>>> jet_tokens_;
-  std::vector<std::string> npf_valuemap_names_;
-  std::vector<std::string> xref_table_names_;
-
+  edm::EDGetTokenT<edm::View<T>> jet_token_;
   edm::EDGetTokenT<VertexCollection> vtx_token_;
-  edm::EDGetTokenT<CandidateView> pfcand_token_;
+  edm::EDGetTokenT<reco::CandidateView> cand_token_;
+  edm::EDGetTokenT<SVCollection> sv_token_;
 
-  std::vector<edm::Handle<edm::View<pat::Jet>>> jets_;
   edm::Handle<VertexCollection> vtxs_;
-  edm::Handle<CandidateView> pfcands_;
+  edm::Handle<reco::CandidateView> cands_;
+  edm::Handle<SVCollection> svs_;
   edm::ESHandle<TransientTrackBuilder> track_builder_;
+
+  const reco::Vertex *pv_ = nullptr;
+  
 };
 
 //
 // constructors and destructor
 //
-JetConstituentTableProducer::JetConstituentTableProducer(const edm::ParameterSet &iConfig)
+template< typename T>
+JetConstituentTableProducer<T>::JetConstituentTableProducer(const edm::ParameterSet &iConfig)
     : name_(iConfig.getParameter<std::string>("name")),
-      check_indices_(iConfig.getParameter<bool>("check_indices")),
+      nameSV_(iConfig.getParameter<std::string>("nameSV")),
+      idx_name_(iConfig.getParameter<std::string>("idx_name")),
+      idx_nameSV_(iConfig.getParameter<std::string>("idx_nameSV")),
+      readBtag_(iConfig.getParameter<bool>("readBtag")),
+      jet_radius_(iConfig.getParameter<double>("jet_radius")),
+      jet_token_(consumes<edm::View<T>>(iConfig.getParameter<edm::InputTag>("jets"))),
       vtx_token_(consumes<VertexCollection>(iConfig.getParameter<edm::InputTag>("vertices"))),
-      pfcand_token_(consumes<CandidateView>(iConfig.getParameter<edm::InputTag>("pf_candidates"))) {
-  const auto &pset = iConfig.getParameterSet("jets");
-  jet_names_ = pset.getParameterNames();
-  ncols_ = jet_names_.size();
-  for (const auto &jetname : jet_names_) {
-    const auto &p = pset.getParameterSet(jetname);
-    jet_ispuppi_.emplace_back(p.getParameter<bool>("isPuppi"));
-    jet_cuts_.emplace_back(p.getParameter<std::string>("cut"), true);
-    jet_tokens_.emplace_back(consumes<edm::View<pat::Jet>>(p.getParameter<edm::InputTag>("src")));
-  }
-
+      cand_token_(consumes<reco::CandidateView>(iConfig.getParameter<edm::InputTag>("candidates"))),
+      sv_token_(consumes<SVCollection>(iConfig.getParameter<edm::InputTag>("secondary_vertices"))){
+  //produces<nanoaod::FlatTable>(name_);
   produces<nanoaod::FlatTable>(name_);
-  produces<std::vector<CandidatePtr>>("constituents");
-  for (const auto &jetname : jet_names_) {
-    produces<edm::ValueMap<int>>(npf_valuemap_names_.emplace_back(jetname + "Npfcand"));
-    produces<nanoaod::FlatTable>(xref_table_names_.emplace_back(jetname + "To" + name_));
-  }
+  produces<nanoaod::FlatTable>(nameSV_);
+  produces<std::vector<reco::CandidatePtr>>();
 }
 
-JetConstituentTableProducer::~JetConstituentTableProducer() {}
+template< typename T>
+JetConstituentTableProducer<T>::~JetConstituentTableProducer() {}
 
-void JetConstituentTableProducer::produce(edm::Event &iEvent, const edm::EventSetup &iSetup) {
+template< typename T>
+void JetConstituentTableProducer<T>::produce(edm::Event &iEvent, const edm::EventSetup &iSetup) {
   // elements in all these collections must have the same order!
-  auto outCands = std::make_unique<std::vector<CandidatePtr>>();
-  std::vector<std::vector<int>> nPFCands(ncols_);
-  std::vector<std::vector<int>> dauIdx(ncols_);  // for each vector: size = sum(nPFcand) for all jets in the event
-  std::vector<std::vector<float>> btagEtaRel(ncols_), btagPtRatio(ncols_), btagPParRatio(ncols_), btagSip3dVal(ncols_),
-      btagSip3dSig(ncols_), btagJetDistVal(ncols_);  // size = outCands.size()
+  auto outCands = std::make_unique<std::vector<reco::CandidatePtr>>();
+  auto outSVs = std::make_unique<std::vector<const reco::VertexCompositePtrCandidate *>> ();
+  std::vector<int> jetIdx_pf, jetIdx_sv, pfcandIdx, svIdx;
+  // PF Cands
+  std::vector<float> btagEtaRel, btagPtRatio, btagPParRatio, btagSip3dVal, btagSip3dSig, btagJetDistVal, cand_pt;
+  // Secondary vertices
+  std::vector<float> sv_mass, sv_pt, sv_ntracks, sv_chi2, sv_normchi2, sv_dxy, sv_dxysig, sv_d3d, sv_d3dsig, sv_costhetasvpv;
+  std::vector<float> sv_ptrel, sv_phirel, sv_deltaR, sv_enratio;
 
-  for (unsigned ic = 0; ic < ncols_; ++ic) {
-    jets_.emplace_back();
-    iEvent.getByToken(jet_tokens_[ic], jets_[ic]);
-    // nPFCands must have same size as the jet collection in all cases
-    nPFCands[ic] = std::vector<int>(jets_[ic]->size(), 0);
+
+  auto jets = iEvent.getHandle(jet_token_);
+  iEvent.getByToken(vtx_token_, vtxs_);
+  iEvent.getByToken(cand_token_, cands_);
+  iEvent.getByToken(sv_token_, svs_);
+
+
+  if(readBtag_){
+    iSetup.get<TransientTrackRecord>().get("TransientTrackBuilder", track_builder_);
   }
 
-  iEvent.getByToken(vtx_token_, vtxs_);
-  if (!vtxs_->empty()) {
-    iEvent.getByToken(pfcand_token_, pfcands_);
-    iSetup.get<TransientTrackRecord>().get("TransientTrackBuilder", track_builder_);
+  for (unsigned i_jet = 0; i_jet < jets->size(); ++i_jet) {
+    const auto &jet = jets->at(i_jet);
+    math::XYZVector jet_dir = jet.momentum().Unit();
+    GlobalVector jet_ref_track_dir(jet.px(), jet.py(), jet.pz());
+    VertexDistance3D vdist;
 
-    std::vector<Key> kvec;                   // stores cand keys in an ordered vector
-    std::unordered_set<Key> kset;            // used to check for duplicates -- not adding to kvec if already in
-    std::unordered_map<Key, unsigned> kmap;  // map from cand's key to its index in the kvec
+    pv_ = &vtxs_->at(0);
 
-    // vmaps below: one for each jet collection
-    std::vector<std::vector<Key>> vvec_dauKeys(ncols_);
-    std::vector<std::unordered_map<Key, float>> vmap_btagEtaRel(ncols_), vmap_btagPtRatio(ncols_),
-        vmap_btagPParRatio(ncols_), vmap_btagSip3dVal(ncols_), vmap_btagSip3dSig(ncols_), vmap_btagJetDistVal(ncols_);
+    //////////////////////
+    // Secondary Vertices
+    std::vector<const reco::VertexCompositePtrCandidate *> jetSVs;
+    std::vector<const reco::VertexCompositePtrCandidate *> allSVs;  
+    for (const auto &sv : *svs_) {
+      // Factor in cuts in NanoAOD for indexing
+      Measurement1D dl= vdist.distance(vtxs_->front(), VertexState(RecoVertex::convertPos(sv.position()),RecoVertex::convertError(sv.error())));
+      if(dl.significance() > 3){
+        allSVs.push_back(&sv);
+      }
+      if (reco::deltaR2(sv, jet) < jet_radius_ * jet_radius_) {
+        jetSVs.push_back(&sv);
+      }
+    }
+    // sort by dxy significance
+    std::sort(jetSVs.begin(),
+              jetSVs.end(),
+              [&](const reco::VertexCompositePtrCandidate *sva, const reco::VertexCompositePtrCandidate *svb) {
+                return sv_vertex_comparator(*sva, *svb, *pv_);
+              });
 
-    for (unsigned ic = 0; ic < ncols_; ++ic) {
-      auto &v_dauKeys = vvec_dauKeys[ic];
-      auto &m_btagEtaRel = vmap_btagEtaRel[ic];
-      auto &m_btagPtRatio = vmap_btagPtRatio[ic];
-      auto &m_btagPParRatio = vmap_btagPParRatio[ic];
-      auto &m_btagSip3dVal = vmap_btagSip3dVal[ic];
-      auto &m_btagSip3dSig = vmap_btagSip3dSig[ic];
-      auto &m_btagJetDistVal = vmap_btagJetDistVal[ic];
+    for (const auto &sv : jetSVs) {
+      // auto svPtrs = svs_->ptrs();
+      auto svInNewList = std::find(allSVs.begin(), allSVs.end(), sv );
+      if (svInNewList == allSVs.end()) {
+        // continue;
+        svIdx.push_back(-1);
+      } else{
+        svIdx.push_back(svInNewList - allSVs.begin());
+      }
+      outSVs->push_back(sv);
+      jetIdx_sv.push_back(i_jet);
+      if (readBtag_ && !vtxs_->empty()) {
+        // Jet independent
+        sv_mass.push_back(sv->mass());
+        sv_pt.push_back(sv->pt());
 
-      for (unsigned i_jet = 0; i_jet < jets_[ic]->size(); ++i_jet) {
-        const auto &jet = jets_[ic]->at(i_jet);
-        if (!jet_cuts_[ic](jet)) {
+        sv_ntracks.push_back(sv->numberOfDaughters());
+        sv_chi2.push_back(sv->vertexChi2());
+        sv_normchi2.push_back(catch_infs_and_bound(sv->vertexChi2() / sv->vertexNdof(), 1000, -1000, 1000));
+        const auto& dxy_meas = vertexDxy(*sv, *pv_);
+        sv_dxy.push_back(dxy_meas.value());
+        sv_dxysig.push_back(catch_infs_and_bound(dxy_meas.value() / dxy_meas.error(), 0, -1, 800));
+        const auto& d3d_meas = vertexD3d(*sv, *pv_);
+        sv_d3d.push_back(d3d_meas.value());
+        sv_d3dsig.push_back(catch_infs_and_bound(d3d_meas.value() / d3d_meas.error(), 0, -1, 800));
+        sv_costhetasvpv.push_back(vertexDdotP(*sv, *pv_));
+        // Jet related
+        sv_ptrel.push_back(sv->pt() / jet.pt());
+        sv_phirel.push_back(reco::deltaPhi(*sv, jet));
+        sv_deltaR.push_back(catch_infs_and_bound(std::fabs(reco::deltaR(*sv, jet_dir)) - 0.5, 0, -2, 0));
+        sv_enratio.push_back(sv->energy() / jet.energy());
+      }
+    }
+
+    // PF Cands   
+    std::vector<reco::CandidatePtr> const & daughters = jet.daughterPtrVector();
+    for (const auto &cand : daughters) {
+      if (!(cand.isNonnull() && cand.isAvailable())) {
+        edm::LogWarning("InvalidCand") << "Found null candidate, skipping." << std::endl;
+        continue;
+      }
+      auto candPtrs = cands_->ptrs();
+      auto candInNewList = std::find( candPtrs.begin(), candPtrs.end(), cand );
+      if ( candInNewList == candPtrs.end() ) {
+        // Hack: try to patch with momentum matching
+        for (auto candInNewList2 : candPtrs) {
+          if ((candInNewList2->pt() - cand->pt() < 1.e-3) && (candInNewList2->eta() - cand->eta() < 1.e-3) && (candInNewList2->phi() - cand->phi() < 1.e-3)) {
+            candInNewList = std::find(candPtrs.begin(), candPtrs.end(), candInNewList2);
+          }
+        }
+        if (candInNewList == candPtrs.end()) {
+          edm::LogWarning("InvalidCand") << "Cannot find candidate in original cand collection, skipping: " << cand.id() << ", " << cand.key() << ", pt = " << cand->pt() << ", eta = " << cand->eta() << ", phi = " << cand->phi() << ", mass = " << cand->mass() << std::endl;
           continue;
         }
-
-        math::XYZVector jet_dir = jet.momentum().Unit();
-        GlobalVector jet_ref_track_dir(jet.px(), jet.py(), jet.pz());
-
-        auto daughters = getDaughters(jet, jet_ispuppi_[ic]);
-        nPFCands[ic][i_jet] = daughters.size();
-        for (const auto &cand : daughters) {
-          auto result = kset.insert(cand.key());
-          if (result.second) {
-            // if cand.key is not in kset
-            kmap[cand.key()] = kvec.size();  // new val will be added to the end of kvec
-            kvec.push_back(cand.key());
-          }
-          v_dauKeys.push_back(cand.key());  // add for the current jet collection
-          if (cand->hasTrackDetails()) {
-            btagbtvdeep::TrackInfoBuilder trkinfo(track_builder_);
-            trkinfo.buildTrackInfo(&(*cand), jet_dir, jet_ref_track_dir, vtxs_->at(0));
-            m_btagEtaRel[cand.key()] = trkinfo.getTrackEtaRel();
-            m_btagPtRatio[cand.key()] = trkinfo.getTrackPtRatio();
-            m_btagPParRatio[cand.key()] = trkinfo.getTrackPParRatio();
-            m_btagSip3dVal[cand.key()] = trkinfo.getTrackSip3dVal();
-            m_btagSip3dSig[cand.key()] = trkinfo.getTrackSip3dSig();
-            m_btagJetDistVal[cand.key()] = trkinfo.getTrackJetDistVal();
-          } else {
-            m_btagEtaRel[cand.key()] = 0;
-            m_btagPtRatio[cand.key()] = 0;
-            m_btagPParRatio[cand.key()] = 0;
-            m_btagSip3dVal[cand.key()] = 0;
-            m_btagSip3dSig[cand.key()] = 0;
-            m_btagJetDistVal[cand.key()] = 0;
-          }
-        }
-      }  // end jet loop
-    }
-
-    // use pfcand key to determine the index in the output pfcand collection/table
-    for (unsigned ic = 0; ic < ncols_; ++ic) {
-      for (const auto &key : vvec_dauKeys[ic]) {
-        dauIdx[ic].push_back(kmap.at(key));
       }
-    }
 
-    for (const auto &key : kvec) {
-      outCands->push_back(pfcands_->ptrAt(key));
-      // fill variables
-      for (unsigned ic = 0; ic < ncols_; ++ic) {
-        // fill 0 if this pfcand does not appear in this jet collection
-        btagEtaRel[ic].push_back(getval(vmap_btagEtaRel[ic], key));
-        btagPtRatio[ic].push_back(getval(vmap_btagPtRatio[ic], key));
-        btagPParRatio[ic].push_back(getval(vmap_btagPParRatio[ic], key));
-        btagSip3dVal[ic].push_back(getval(vmap_btagSip3dVal[ic], key));
-        btagSip3dSig[ic].push_back(getval(vmap_btagSip3dSig[ic], key));
-        btagJetDistVal[ic].push_back(getval(vmap_btagJetDistVal[ic], key));
-      }
-    }
-
-    // for testing the implementation -- turn if off for production
-    if (check_indices_) {
-      for (unsigned ic = 0; ic < ncols_; ++ic) {
-        unsigned idau_global = 0;
-        for (unsigned i_jet = 0; i_jet < jets_[ic]->size(); ++i_jet) {
-          const auto &jet = jets_[ic]->at(i_jet);
-          if (nPFCands[ic][i_jet] == 0)
-            continue;
-          auto daughters = getDaughters(jet, jet_ispuppi_[ic]);
-          for (unsigned idau = 0; idau < daughters.size(); ++idau) {
-            if (daughters[idau].key() != outCands->at(dauIdx[ic].at(idau_global)).key()) {
-              throw cms::Exception("RuntimeError") << "Inconsistent index for jet collection " << jet_names_[ic];
-            }
-            ++idau_global;
-          }
+      outCands->push_back(cand);
+      jetIdx_pf.push_back(i_jet);
+      pfcandIdx.push_back(candInNewList - candPtrs.begin());
+      cand_pt.push_back(cand->pt());
+      if (readBtag_ && !vtxs_->empty()) {
+        if ( cand.isNull() ) continue;
+        auto const *packedCand = dynamic_cast <pat::PackedCandidate const *>(cand.get());
+        if ( packedCand == nullptr ) continue;
+        if ( packedCand && packedCand->hasTrackDetails()){
+          btagbtvdeep::TrackInfoBuilder trkinfo(track_builder_);
+          trkinfo.buildTrackInfo(&(*packedCand), jet_dir, jet_ref_track_dir, vtxs_->at(0));
+          btagEtaRel.push_back(trkinfo.getTrackEtaRel());
+          btagPtRatio.push_back(trkinfo.getTrackPtRatio());
+          btagPParRatio.push_back(trkinfo.getTrackPParRatio());
+          btagSip3dVal.push_back(trkinfo.getTrackSip3dVal());
+          btagSip3dSig.push_back(trkinfo.getTrackSip3dSig());
+          btagJetDistVal.push_back(trkinfo.getTrackJetDistVal());
+        } else {
+                btagEtaRel.push_back(0);
+                btagPtRatio.push_back(0);
+                btagPParRatio.push_back(0);
+                btagSip3dVal.push_back(0);
+                btagSip3dSig.push_back(0);
+                btagJetDistVal.push_back(0);
         }
       }
-    }  // check_indices_
+    }  // end jet loop
   }
 
   auto candTable = std::make_unique<nanoaod::FlatTable>(outCands->size(), name_, false);
+  // std::cout << "DEBUG : candTable (" << name_ << ") has N = " << outCands->size() << std::endl;
   // We fill from here only stuff that cannot be created with the SimpleFlatTableProducer
-  for (unsigned ic = 0; ic < ncols_; ++ic) {
-    auto suffix = "_" + jet_names_[ic];
-    auto doc = "(" + jet_names_[ic] + ")";
-    candTable->addColumn<float>(
-        "btagEtaRel" + suffix, btagEtaRel[ic], "btagEtaRel" + doc, nanoaod::FlatTable::FloatColumn, 10);
-    candTable->addColumn<float>(
-        "btagPtRatio" + suffix, btagPtRatio[ic], "btagPtRatio" + doc, nanoaod::FlatTable::FloatColumn, 10);
-    candTable->addColumn<float>(
-        "btagPParRatio" + suffix, btagPParRatio[ic], "btagPParRatio" + doc, nanoaod::FlatTable::FloatColumn, 10);
-    candTable->addColumn<float>(
-        "btagSip3dVal" + suffix, btagSip3dVal[ic], "btagSip3dVal" + doc, nanoaod::FlatTable::FloatColumn, 10);
-    candTable->addColumn<float>(
-        "btagSip3dSig" + suffix, btagSip3dSig[ic], "btagSip3dSig" + doc, nanoaod::FlatTable::FloatColumn, 10);
-    candTable->addColumn<float>(
-        "btagJetDistVal" + suffix, btagJetDistVal[ic], "btagJetDistVal" + doc, nanoaod::FlatTable::FloatColumn, 10);
+  candTable->addColumn<int>(idx_name_, pfcandIdx, "Index in the candidate list", nanoaod::FlatTable::IntColumn);
+  candTable->addColumn<int>("jetIdx", jetIdx_pf, "Index of the parent jet", nanoaod::FlatTable::IntColumn);
+  if (readBtag_) {
+    candTable->addColumn<float>("pt", cand_pt, "pt", nanoaod::FlatTable::FloatColumn, 10);  // to check matchind down the line
+    candTable->addColumn<float>("btagEtaRel", btagEtaRel, "btagEtaRel", nanoaod::FlatTable::FloatColumn, 10);
+    candTable->addColumn<float>("btagPtRatio", btagPtRatio, "btagPtRatio", nanoaod::FlatTable::FloatColumn, 10);
+    candTable->addColumn<float>("btagPParRatio", btagPParRatio, "btagPParRatio", nanoaod::FlatTable::FloatColumn, 10);
+    candTable->addColumn<float>("btagSip3dVal", btagSip3dVal, "btagSip3dVal", nanoaod::FlatTable::FloatColumn, 10);
+    candTable->addColumn<float>("btagSip3dSig", btagSip3dSig, "btagSip3dSig", nanoaod::FlatTable::FloatColumn, 10);
+    candTable->addColumn<float>("btagJetDistVal", btagJetDistVal, "btagJetDistVal", nanoaod::FlatTable::FloatColumn, 10);
   }
-
   iEvent.put(std::move(candTable), name_);
-  iEvent.put(std::move(outCands), "constituents");
-  for (unsigned ic = 0; ic < ncols_; ++ic) {
-    auto npfMap = std::make_unique<edm::ValueMap<int>>();
-    edm::ValueMap<int>::Filler filler(*npfMap);
-    filler.insert(jets_[ic], nPFCands[ic].begin(), nPFCands[ic].end());
-    filler.fill();
-    iEvent.put(std::move(npfMap), npf_valuemap_names_[ic]);
 
-    auto xrefTable = std::make_unique<nanoaod::FlatTable>(dauIdx[ic].size(), xref_table_names_[ic], false);
-    xrefTable->addColumn<int>("candIdx",
-                              dauIdx[ic],
-                              "Indices of the jet constitutes in the PFCand table. Use nPFCands in the jet table to "
-                              "separate these indices for each jet.",
-                              nanoaod::FlatTable::IntColumn);
-    iEvent.put(std::move(xrefTable), xref_table_names_[ic]);
+   // SV table
+  auto svTable = std::make_unique<nanoaod::FlatTable>(outSVs->size(), nameSV_, false);
+  // We fill from here only stuff that cannot be created with the SimpleFlatTnameableProducer
+  svTable->addColumn<int>("jetIdx", jetIdx_sv, "Index of the parent jet", nanoaod::FlatTable::IntColumn);
+  svTable->addColumn<int>(idx_nameSV_, svIdx, "Index in the SV list", nanoaod::FlatTable::IntColumn);
+  if (readBtag_) {
+    svTable->addColumn<float>("mass", sv_mass, "SV mass", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("pt", sv_pt, "SV pt", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("ntracks", sv_ntracks, "Number of trakcs associated to SV", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("chi2", sv_chi2, "chi2", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("normchi2", sv_normchi2, "chi2/ndof", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("dxy", sv_dxy, "", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("dxysig", sv_dxysig, "", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("d3d", sv_d3d, "", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("d3dsig", sv_d3dsig, "", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("costhetasvpv", sv_costhetasvpv, "", nanoaod::FlatTable::FloatColumn, 10);
+    // Jet related
+    svTable->addColumn<float>("phirel", sv_phirel, "DeltaPhi(sv, jet)", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("ptrel", sv_ptrel, "pT relative to parent jet", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("deltaR", sv_deltaR, "dR from parent jet", nanoaod::FlatTable::FloatColumn, 10);
+    svTable->addColumn<float>("enration", sv_enratio, "energy relative to parent jet", nanoaod::FlatTable::FloatColumn, 10);
   }
+
+  iEvent.put(std::move(svTable), nameSV_);
+  iEvent.put(std::move(outCands));
 }
 
-std::vector<JetConstituentTableProducer::CandidatePtr> JetConstituentTableProducer::getDaughters(const pat::Jet &jet,
-                                                                                                 bool isPuppi) {
-  std::vector<CandidatePtr> daughters;
-  for (const auto &cand : jet.daughterPtrVector()) {
-    const auto *packed_cand = dynamic_cast<const pat::PackedCandidate *>(&(*cand));
-    assert(packed_cand != nullptr);
-    // remove particles w/ extremely low puppi weights (needed for 2017 MiniAOD)
-    if (isPuppi && packed_cand->puppiWeight() < 0.01)
-      continue;
-    // get the original reco/packed candidate not scaled by the puppi weight
-    daughters.push_back(pfcands_->ptrAt(cand.key()));
-  }
-  // sort by original pt (not Puppi weighted)
-  std::sort(daughters.begin(), daughters.end(), [](const auto &a, const auto &b) { return a->pt() > b->pt(); });
-  return daughters;
-}
-
-void JetConstituentTableProducer::fillDescriptions(edm::ConfigurationDescriptions &descriptions) {
+template< typename T>
+void JetConstituentTableProducer<T>::fillDescriptions(edm::ConfigurationDescriptions &descriptions) {
   edm::ParameterSetDescription desc;
   desc.add<std::string>("name", "JetPFCands");
-  desc.add<bool>("check_indices", false);
-  edm::ParameterSetDescription jets;
-  jets.setAllowAnything();
-  desc.add<edm::ParameterSetDescription>("jets", jets);
+  desc.add<std::string>("nameSV", "JetSV");
+  desc.add<std::string>("idx_name", "candIdx");
+  desc.add<std::string>("idx_nameSV", "svIdx");
+  desc.add<double>("jet_radius", true);
+  desc.add<bool>("readBtag", true);
+  desc.add<edm::InputTag>("jets", edm::InputTag("slimmedJetsAK8"));
   desc.add<edm::InputTag>("vertices", edm::InputTag("offlineSlimmedPrimaryVertices"));
-  desc.add<edm::InputTag>("pf_candidates", edm::InputTag("packedPFCandidates"));
+  desc.add<edm::InputTag>("candidates", edm::InputTag("packedPFCandidates"));
+  desc.add<edm::InputTag>("secondary_vertices", edm::InputTag("slimmedSecondaryVertices"));
   descriptions.addWithDefaultLabel(desc);
 }
 
-DEFINE_FWK_MODULE(JetConstituentTableProducer);
+typedef JetConstituentTableProducer<pat::Jet> PatJetConstituentTableProducer;
+typedef JetConstituentTableProducer<reco::GenJet> GenJetConstituentTableProducer;
+
+DEFINE_FWK_MODULE(PatJetConstituentTableProducer);
+DEFINE_FWK_MODULE(GenJetConstituentTableProducer);
