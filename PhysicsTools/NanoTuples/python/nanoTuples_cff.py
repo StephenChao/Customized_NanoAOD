@@ -64,7 +64,7 @@ def nanoTuples_addParticleNetRawScore(process, addParticleNetProbs=False):
 
     return process
 
-def nanoTuples_customizeCommon(process, runOnMC, addAK15=True, addAK8=False, addPFcands=False,  AddDeepAK8RawScore=True, addParticleNetRawScore=True, customTaggers=[]):
+def nanoTuples_customizeCommon(process, runOnMC, addAK15=True, addAK8=False, addPFcands=True,  AddDeepAK8RawScore=False, addParticleNetRawScore=False, customTaggers=[]):
     pfcand_params = {'srcs': [], 'isPuppiJets':[], 'jetTables':[]}
     if addAK15:
         setupAK15(process, runOnMC=runOnMC, runParticleNet=False, runParticleNetMD=True)
@@ -98,7 +98,7 @@ def nanoTuples_customizeCommon(process, runOnMC, addAK15=True, addAK8=False, add
 
 
 def nanoTuples_customizeData(process):
-    process = nanoTuples_customizeCommon(process, False, addAK15=False, addAK8=False, addPFcands=False, AddDeepAK8RawScore=True, addParticleNetRawScore=True, customTaggers=['DeepHWWV1', 'InclParticleTransformerV1'])
+    process = nanoTuples_customizeCommon(process, False, addAK15=False, addAK8=False, addPFcands=True, AddDeepAK8RawScore=False, addParticleNetRawScore=False, customTaggers=['DeepHWWV1', 'InclParticleTransformerV1'])
 
     process.NANOAODoutput.fakeNameForCrab = cms.untracked.bool(True)  # hack for crab publication
     process.add_(cms.Service("InitRootHandlers", EnableIMT=cms.untracked.bool(False)))
@@ -106,7 +106,7 @@ def nanoTuples_customizeData(process):
 
 
 def nanoTuples_customizeMC(process):
-    process = nanoTuples_customizeCommon(process, True, addAK15=True, addAK8=False, addPFcands=False, AddDeepAK8RawScore=True, addParticleNetRawScore=True, customTaggers=['DeepHWWV1', 'InclParticleTransformerV1'])
+    process = nanoTuples_customizeCommon(process, True, addAK15=True, addAK8=False, addPFcands=True, AddDeepAK8RawScore=False, addParticleNetRawScore=False, customTaggers=['DeepHWWV1', 'InclParticleTransformerV1'])
 
     process.NANOAODSIMoutput.fakeNameForCrab = cms.untracked.bool(True)  # hack for crab publication
     process.add_(cms.Service("InitRootHandlers", EnableIMT=cms.untracked.bool(False)))
