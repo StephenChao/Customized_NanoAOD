@@ -87,7 +87,7 @@ def nanoTuples_customizeCommon(process, runOnMC, addAK15=True, addAK8=False, add
         pfcand_params['jetTables'].append('fatJetTable')
     if addPFcands:
         addPFCands(process, runOnMC=runOnMC, addAK4=True, addAK8=True)
-        add_BTV(process, runOnMC=runOnMC)  
+        # add_BTV(process, runOnMC=runOnMC)  
 
     if AddDeepAK8RawScore:
         nanoTuples_addDeepAK8RawScore(process, addDeepAK8Probs=True)
